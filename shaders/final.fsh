@@ -3,6 +3,7 @@
 
 uniform sampler2D colortex0;
 uniform sampler2D colortex1;
+uniform sampler2D colortex2;
 uniform sampler2D depthtex0;
 uniform sampler2D depthtex1;
 uniform mat4 gbufferProjection;
@@ -10,9 +11,10 @@ uniform mat4 gbufferProjectionInverse;
 uniform mat4 gbufferModelView;
 uniform mat4 gbufferModelViewInverse;
 uniform vec3 cameraPosition;
+uniform vec3 skyColor;
 uniform float viewWidth;
 uniform float viewHeight;
-uniform float worldTime;
+uniform int worldTime;
 uniform float rainStrength;
 uniform float thunderStrength;
 uniform int dimension;
@@ -42,19 +44,22 @@ float hash21(vec2 p) {
 
 float exposedToRain(vec3 worldPosition) {
     for (int i = 1; i <= 32; ++i) {
-        vec3 probeWorld = worldPosition + vec3(0.0, float(i) * 0.25, 0.0);
+        vec3 probeWorld = worldPosition + vec3(0.0, float(i) * 0.5, 0.0);
         vec3 probeView = (gbufferModelView *
             vec4(probeWorld - cameraPosition, 1.0)).xyz;
         vec2 uv = projectView(probeView);
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-            return 0.0;
+            return 1.0;
         }
 
         float sceneDepth = texture2D(depthtex0, uv).r;
         if (sceneDepth < 0.999999) {
             vec3 scenePosition = viewPosition(uv, sceneDepth);
-            if (scenePosition.z > probeView.z + 0.04 &&
-                length(scenePosition.xy - probeView.xy) < 0.45) {
+            vec3 sceneWorld = (gbufferModelViewInverse *
+                vec4(scenePosition, 1.0)).xyz + cameraPosition;
+            if (sceneWorld.y > worldPosition.y + 0.25 &&
+                sceneWorld.y < probeWorld.y + 0.75 &&
+                length(sceneWorld.xz - probeWorld.xz) < 0.6) {
                 return 0.0;
             }
         }
@@ -62,7 +67,7 @@ float exposedToRain(vec3 worldPosition) {
     return 1.0;
 }
 
-vec3 screenReflection(vec3 position, vec3 normal, vec3 fallbackColor) {
+vec3 screenReflection(vec3 position, vec3 normal) {
     vec3 direction = normalize(reflect(normalize(position), normal));
     vec3 ray = position + normal * 0.04;
     for (int i = 0; i < 20; ++i) {
@@ -82,29 +87,37 @@ vec3 screenReflection(vec3 position, vec3 normal, vec3 fallbackColor) {
             }
         }
     }
-    return fallbackColor;
+    vec3 worldDirection = mat3(gbufferModelViewInverse) * direction;
+    float skyFade = clamp(worldDirection.y * 0.5 + 0.5, 0.0, 1.0);
+    return skyColor * (0.25 + 0.75 * skyFade);
 }
 
 void main() {
     vec2 uv = vTexCoord;
     vec3 color = texture2D(colortex0, uv).rgb;
-    float depth = texture2D(depthtex1, uv).r;
     vec4 materialData = texture2D(colortex1, uv);
-    float material = materialData.a;
+    float material = texture2D(colortex2, uv).a;
+    float depth = material > 0.5 ? materialData.a :
+                  texture2D(depthtex1, uv).r;
 
     if (depth < 0.999999 && material > 0.5) {
         vec3 position = viewPosition(uv, depth);
         vec3 normal = normalize(materialData.rgb * 2.0 - 1.0);
         if (dot(normal, normalize(position)) > 0.0) normal = -normal;
 
-        vec3 reflected = screenReflection(position, normal, color);
-        float fresnel = pow(1.0 - clamp(abs(dot(normal, normalize(position))), 0.0, 1.0), 5.0);
-        color = mix(color, reflected, 0.32 * (0.55 + 0.45 * fresnel));
+        vec3 reflected = screenReflection(position, normal);
+        float baseReflectance = material > 2.5 ? 0.02 :
+                                (material > 1.5 ? 0.04 : 0.018);
+        float fresnel = baseReflectance +
+            (1.0 - baseReflectance) *
+            pow(1.0 - clamp(abs(dot(normal, normalize(position))),
+                            0.0, 1.0), 5.0);
+        color = mix(color, reflected, fresnel);
     }
 
     if (depth < 0.999999 && rainStrength > 0.001) {
         vec3 position = viewPosition(uv, depth);
-        vec3 normal = normalize(texture2D(colortex1, uv).rgb * 2.0 - 1.0);
+        vec3 normal = normalize(materialData.rgb * 2.0 - 1.0);
         vec3 upView = normalize(mat3(gbufferModelView) * vec3(0.0, 1.0, 0.0));
 
         vec3 worldPosition = (gbufferModelViewInverse *
@@ -127,7 +140,7 @@ void main() {
 
     if (isEyeInWater == 1) {
         vec2 pixel = vec2(1.0 / viewWidth, 1.0 / viewHeight);
-        float centerDepth = length(viewPosition(uv, depth));
+        float centerDepth = length(viewPosition(uv, texture2D(depthtex1, uv).r));
         float depthEdge = 0.0;
         depthEdge = max(depthEdge, abs(centerDepth - length(viewPosition(uv + vec2(pixel.x, 0.0), texture2D(depthtex1, uv + vec2(pixel.x, 0.0)).r))));
         depthEdge = max(depthEdge, abs(centerDepth - length(viewPosition(uv - vec2(pixel.x, 0.0), texture2D(depthtex1, uv - vec2(pixel.x, 0.0)).r))));
@@ -147,8 +160,10 @@ void main() {
         color *= 1.0 - edgeMask * 0.08;
     }
 
-    float night = smoothstep(12500.0, 14000.0, worldTime) *
-                  (1.0 - smoothstep(22000.0, 23500.0, worldTime));
+    float timeOfDay = float(worldTime);
+    float night = dimension == 0 ?
+        smoothstep(12500.0, 14000.0, timeOfDay) *
+        (1.0 - smoothstep(22000.0, 23500.0, timeOfDay)) : 0.0;
     float weatherDarkness;
     if (thunderStrength > 0.001) {
         weatherDarkness = mix(1.0, 0.6666667,
