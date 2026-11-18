@@ -39,10 +39,12 @@ float hash21(vec2 p) {
     return fract(p.x * p.y);
 }
 
-float exposedToRain(vec3 position, vec3 upView) {
+float exposedToRain(vec3 worldPosition) {
     for (int i = 1; i <= 32; ++i) {
-        vec3 probe = position + upView * float(i);
-        vec2 uv = projectView(probe);
+        vec3 probeWorld = worldPosition + vec3(0.0, float(i) * 0.25, 0.0);
+        vec3 probeView = (gbufferModelView *
+            vec4(probeWorld - cameraPosition, 1.0)).xyz;
+        vec2 uv = projectView(probeView);
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
             return 0.0;
         }
@@ -50,8 +52,8 @@ float exposedToRain(vec3 position, vec3 upView) {
         float sceneDepth = texture2D(depthtex0, uv).r;
         if (sceneDepth < 0.999999) {
             vec3 scenePosition = viewPosition(uv, sceneDepth);
-            if (scenePosition.z > probe.z + 0.04 &&
-                length(scenePosition.xy - probe.xy) < 0.45) {
+            if (scenePosition.z > probeView.z + 0.04 &&
+                length(scenePosition.xy - probeView.xy) < 0.45) {
                 return 0.0;
             }
         }
@@ -104,9 +106,10 @@ void main() {
         vec3 normal = normalize(texture2D(colortex1, uv).rgb * 2.0 - 1.0);
         vec3 upView = normalize(mat3(gbufferModelView) * vec3(0.0, 1.0, 0.0));
 
+        vec3 worldPosition = (gbufferModelViewInverse *
+            vec4(position, 1.0)).xyz + cameraPosition;
         if (dot(normal, upView) > 0.72 &&
-            exposedToRain(position, upView) > 0.5) {
-            vec3 worldPosition = (gbufferModelViewInverse * vec4(position, 1.0)).xyz + cameraPosition;
+            exposedToRain(worldPosition) > 0.5) {
             vec2 cell = floor(worldPosition.xz * 4.0);
             float randomValue = hash21(cell);
             float phase = fract(float(frameCounter) / 18.0 + randomValue);
@@ -145,10 +148,14 @@ void main() {
 
     float night = smoothstep(12500.0, 14000.0, worldTime) *
                   (1.0 - smoothstep(22000.0, 23500.0, worldTime));
-    float weatherDarkness = mix(1.0, 0.8333333,
-                                 clamp(rainStrength, 0.0, 1.0));
-    weatherDarkness = mix(weatherDarkness, 0.6666667,
-                          clamp(thunderStrength, 0.0, 1.0));
+    float weatherDarkness;
+    if (thunderStrength > 0.001) {
+        weatherDarkness = mix(1.0, 0.6666667,
+                              clamp(thunderStrength, 0.0, 1.0));
+    } else {
+        weatherDarkness = mix(1.0, 0.8333333,
+                              clamp(rainStrength, 0.0, 1.0));
+    }
 
     float brightness = 0.987 * mix(1.0, 0.5, night) *
                        weatherDarkness;
