@@ -1,4 +1,5 @@
 #version 330 compatibility
+/* DRAWBUFFERS:0 */
 
 uniform sampler2D colortex0;
 uniform sampler2D colortex1;
@@ -173,5 +174,5 @@ void main() {
 
     color = (color - 0.5) * contrast + 0.5;
     color *= brightness;
-    gl_FragColor = vec4(color, 1.0);
+    gl_FragData[0] = vec4(color, 1.0);
 }
